@@ -23,6 +23,8 @@ interface ProfileProps {
   isDarkMode?: boolean
 }
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://classsync-portal-production.up.railway.app';
+
 export default function Profile({ role: initialRole = 'student', isDarkMode = false }: ProfileProps) {
   const [user, setUser] = useState<ProfileUser>(() => {
     let realData: ProfileUser = {
@@ -130,7 +132,7 @@ export default function Profile({ role: initialRole = 'student', isDarkMode = fa
       const parsed = stored ? JSON.parse(stored) : {}
       formData.append('userId', String(user.id || parsed.id || '1'))
 
-      const response = await fetch('http://localhost:5000/auth/upload-avatar', {
+      const response = await fetch(`${API_BASE_URL}/auth/upload-avatar`, {
         method: 'POST',
         body: formData,
       })
@@ -174,7 +176,7 @@ export default function Profile({ role: initialRole = 'student', isDarkMode = fa
     }
 
     try {
-      const response = await fetch('http://localhost:5000/auth/update-profile', {
+      const response = await fetch(`${API_BASE_URL}/auth/update-profile`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

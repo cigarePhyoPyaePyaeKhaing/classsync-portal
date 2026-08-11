@@ -11,6 +11,8 @@ interface Props {
   setLang?: (lang: 'en' | 'mm') => void
 }
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://classsync-portal-production.up.railway.app';
+
 export default function Login({
   onLogin,
   onBack,
@@ -135,7 +137,7 @@ export default function Login({
 
       setIsLoading(true)
       try {
-        const response = await fetch('http://localhost:5000/auth/login', {
+        const response = await fetch(`${API_BASE_URL}/auth/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ identifier: tntOrEmail, password })
@@ -144,7 +146,6 @@ export default function Login({
         
         if (!response.ok) throw new Error(data.error)
 
-        // LocalStorage ထဲသို့ Database မှ Real-time Data များကို အမှန်တကယ် ထည့်သွင်းသိမ်းဆည်းခြင်း (Updated with id and extra fields)
         localStorage.setItem(
           'classsync_user',
           JSON.stringify({
@@ -180,7 +181,7 @@ export default function Login({
 
       setIsLoading(true)
       try {
-        const response = await fetch('http://localhost:5000/auth/register', {
+        const response = await fetch(`${API_BASE_URL}/auth/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ fullName, email, tntNo, password, semester, section })
@@ -239,7 +240,7 @@ export default function Login({
     setIsLoading(true)
 
     try {
-      const response = await fetch('http://localhost:5000/auth/verify-otp', {
+      const response = await fetch(`${API_BASE_URL}/auth/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, otp: enteredCode })
@@ -574,7 +575,7 @@ export default function Login({
                   <div className={`flex-grow border-t ${isDarkMode ? 'border-slate-800' : 'border-slate-200'}`}></div>
                 </div>
 
-                <a href="http://localhost:5000/auth/google" className={`w-full py-2.5 px-4 rounded-2xl border font-semibold text-xs transition-all flex items-center justify-center gap-2.5 shadow-sm cursor-pointer ${isDarkMode ? 'bg-slate-800/80 border-slate-700 text-gray-200 hover:bg-slate-800' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'}`}>
+                <a href={`${API_BASE_URL}/auth/google`} className={`w-full py-2.5 px-4 rounded-2xl border font-semibold text-xs transition-all flex items-center justify-center gap-2.5 shadow-sm cursor-pointer ${isDarkMode ? 'bg-slate-800/80 border-slate-700 text-gray-200 hover:bg-slate-800' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'}`}>
                   <svg className="w-4 h-4" viewBox="0 0 24 24">
                     <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"/>
                     <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.95H1.2v3.14C3.17 21.36 7.24 24 12 24z"/>
