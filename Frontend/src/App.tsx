@@ -5,6 +5,8 @@ import AppShell from './pages/AppShell'
 
 export type Role = 'student' | 'cr'
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://classsync-portal-production.up.railway.app'
+
 export default function App() {
   const [screen, setScreen] = useState<'landing' | 'login' | 'app'>('landing')
   const [initialAuthMode, setInitialAuthMode] = useState<'login' | 'register'>('login')
@@ -19,6 +21,58 @@ export default function App() {
   })
 
   const [lang, setLang] = useState<'en' | 'mm'>('en')
+
+  // Google redirects back with a short-lived API token in the URL fragment.
+  // Fragments are never sent to Vercel, so the token is not exposed in server logs.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.hash.slice(1))
+    const googleToken = params.get('auth_token')
+
+    if (params.has('auth_error')) {
+      window.history.replaceState({}, document.title, window.location.pathname)
+      setInitialAuthMode('login')
+      setScreen('login')
+      return
+    }
+
+    if (googleToken) {
+      window.history.replaceState({}, document.title, window.location.pathname)
+      fetch(`${API_BASE_URL}/auth/me`, {
+        headers: { Authorization: `Bearer ${googleToken}` },
+      })
+        .then(async (response) => {
+          const data = await response.json()
+          if (!response.ok) throw new Error(data.error || 'Google sign-in could not be completed.')
+          const authenticatedRole: Role = data.user.role === 'cr' ? 'cr' : 'student'
+          localStorage.setItem('classsync_user', JSON.stringify({
+            ...data.user,
+            role: authenticatedRole,
+            isLoggedIn: true,
+            token: googleToken,
+          }))
+          setRole(authenticatedRole)
+          setScreen('app')
+        })
+        .catch(() => {
+          localStorage.removeItem('classsync_user')
+          setInitialAuthMode('login')
+          setScreen('login')
+        })
+      return
+    }
+
+    const savedUser = localStorage.getItem('classsync_user')
+    if (!savedUser) return
+    try {
+      const user = JSON.parse(savedUser)
+      if (user.isLoggedIn && user.token) {
+        setRole(user.role === 'cr' ? 'cr' : 'student')
+        setScreen('app')
+      }
+    } catch {
+      localStorage.removeItem('classsync_user')
+    }
+  }, [])
 
   // ⚡ Theme ပြောင်းလဲမှုတိုင်းကို HTML class ရော LocalStorage ထဲပါ မှန်ကန်စွာ သိမ်းဆည်းပေးခြင်း
   useEffect(() => {
@@ -68,7 +122,10 @@ export default function App() {
   return (
     <AppShell
       role={role}
-      onLogout={() => setScreen('landing')}
+      onLogout={() => {
+        localStorage.removeItem('classsync_user')
+        setScreen('landing')
+      }}
       onSwitchRole={() => setRole((r) => (r === 'student' ? 'cr' : 'student'))}
       isDarkMode={isDarkMode}
       setIsDarkMode={setIsDarkMode}
