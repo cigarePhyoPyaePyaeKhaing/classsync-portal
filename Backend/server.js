@@ -1,51 +1,48 @@
-require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
 const session = require('express-session');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const cors = require('cors');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const db = require('./config/db');
 const nodemailer = require('nodemailer');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+const db = require('./db'); // Assumes db.js exports your mysql connection pool
+
+require('dotenv').config();
 
 const app = express();
 
-// --- Railway Reverse Proxy Setup ---
+// Trust proxy for secure cookies on cloud platforms like Railway
 app.set('trust proxy', 1);
 
-app.use(cors({
-    origin: ['http://localhost:8443', 'http://localhost:5173', 'https://classsync-portal.vercel.app'],
-    credentials: true 
-}));
+// Middleware
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
+app.use(cors({
+  origin: [
+    'http://localhost:3000', 
+    'http://localhost:5173', 
+    'https://classsync-portal-production.up.railway.app'
+  ],
+  credentials: true
+}));
+
+// Session configuration
 app.use(session({
   secret: process.env.SESSION_SECRET || 'supersecret',
   resave: false,
-  saveUninitialized: false
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    maxAge: 24 * 60 * 60 * 1000 // 1 day
+  }
 }));
 
 app.use(passport.initialize());
 app.use(passport.session());
 
-passport.serializeUser((user, done) => {
-  done(null, user.id);
-});
-
-passport.deserializeUser(async (id, done) => {
-  try {
-    const [rows] = await db.query('SELECT * FROM users WHERE id = ?', [id]);
-    done(null, rows[0]);
-  } catch (err) {
-    done(err, null);
-  }
-});
-
-// --- EMAIL TRANSPORTER SETUP ---
+// Nodemailer transporter for OTP/Email features
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -54,226 +51,79 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// --- UPLOADS FOLDER & MULTER SETUP ---
-if (!fs.existsSync('./uploads')) {
-    fs.mkdirSync('./uploads');
-}
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/'); 
-  },
-  filename: (req, file, cb) => {
-    cb(null, 'user_' + Date.now() + path.extname(file.originalname));
-  }
-});
-const upload = multer({ storage: storage });
-
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-// --- GOOGLE STRATEGY ---
+// Passport Google Strategy Configuration
 passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
     callbackURL: process.env.CALLBACK_URL || "https://classsync-portal-production.up.railway.app/auth/google/callback"
   },
-  async function(accessToken, refreshToken, profile, done) {
+  async (accessToken, refreshToken, profile, done) => {
     try {
-      const [existingUsers] = await db.query(
-        'SELECT * FROM users WHERE provider = ? AND provider_id = ?', 
-        ['google', profile.id]
-      );
+      const email = profile.emails && profile.emails[0].value;
+      const name = profile.displayName;
 
-      if (existingUsers.length > 0) {
-        return done(null, existingUsers[0]);
+      if (!email) {
+        return done(new Error("No email found in Google profile"), null);
       }
 
-      const email = profile.emails && profile.emails.length > 0 ? profile.emails[0].value : null;
-
-      const [result] = await db.query(
-        'INSERT INTO users (name, email, provider, provider_id, is_verified) VALUES (?, ?, ?, ?, ?)',
-        [profile.displayName, email, 'google', profile.id, true]
-      );
+      // Check if user already exists
+      const [rows] = await db.execute('SELECT * FROM users WHERE email = ?', [email]);
       
-      const newUser = { id: result.insertId, name: profile.displayName, email: email };
-      return done(null, newUser);
-    } catch (error) {
-      return done(error, null);
+      if (rows.length > 0) {
+        return done(null, rows[0]);
+      } else {
+        // Create new user if not exists
+        const [result] = await db.execute(
+          'INSERT INTO users (name, email, is_verified) VALUES (?, ?, ?)',
+          [name, email, true]
+        );
+        const [newUser] = await db.execute('SELECT * FROM users WHERE id = ?', [result.insertId]);
+        return done(null, newUser[0]);
+      }
+    } catch (err) {
+      return done(err, null);
     }
   }
 ));
 
-// --- MANUAL REGISTRATION API ---
-app.post('/auth/register', async (req, res) => {
-  const { fullName, email, tntNo, password, semester, section } = req.body;
+passport.serializeUser((user, done) => {
+  done(null, user.id);
+});
+
+passport.deserializeUser(async (id, done) => {
   try {
-    const [existing] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
-    if (existing.length > 0) {
-      return res.status(400).json({ error: 'Email already exists. Please login.' });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-    await db.query(
-      'INSERT INTO users (name, email, tnt_no, password, semester, section, provider, otp, is_verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [fullName, email, tntNo, hashedPassword, semester, section, 'manual', otp, false]
-    );
-
-    const mailOptions = {
-      from: `"ClassSync Portal" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: 'Your ClassSync Verification Code',
-      text: `Hello ${fullName},\n\nYour Verification Code is: ${otp}`,
-      html: `<h3>Hello ${fullName},</h3><p>Your Verification Code is: <b style="font-size:20px; color:#007782;">${otp}</b></p>`
-    };
-    
-    await transporter.sendMail(mailOptions);
-    res.status(200).json({ message: 'Registration successful. OTP sent to email.' });
+    const [rows] = await db.execute('SELECT * FROM users WHERE id = ?', [id]);
+    done(null, rows[0]);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Database or Email sending error' });
+    done(err, null);
   }
 });
 
-// --- OTP VERIFICATION API ---
-app.post('/auth/verify-otp', async (req, res) => {
-  const { email, otp } = req.body;
-  try {
-    const [users] = await db.query('SELECT * FROM users WHERE email = ? AND otp = ?', [email, otp]);
-    if (users.length === 0) {
-      return res.status(400).json({ error: 'Invalid or expired OTP code.' });
-    }
-
-    await db.query('UPDATE users SET is_verified = TRUE, otp = NULL WHERE email = ?', [email]);
-    res.status(200).json({ message: 'Account successfully verified!' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Verification error' });
-  }
+// Routes
+app.get('/', (req, res) => {
+  res.send('ClassSync Backend Server is Running Successfully!');
 });
 
-// --- MANUAL LOGIN API ---
-app.post('/auth/login', async (req, res) => {
-  const { identifier, password } = req.body;
-  try {
-    const [users] = await db.query('SELECT * FROM users WHERE email = ? OR tnt_no = ?', [identifier, identifier]);
-    
-    if (users.length === 0) {
-      return res.status(400).json({ error: 'User not found. Please register first.' });
-    }
-
-    const user = users[0];
-    
-    if (!user.password) {
-      return res.status(400).json({ error: 'This account was created with Google. Please "Sign in with Google".' });
-    }
-
-    if (!user.is_verified) {
-      return res.status(400).json({ error: 'Please verify your email first.' });
-    }
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(400).json({ error: 'Incorrect password' });
-    }
-
-    const token = jwt.sign({ id: user.id, email: user.email }, process.env.SESSION_SECRET, { expiresIn: '1d' });
-    res.status(200).json({ 
-        message: 'Login successful', 
-        token, 
-        user: { 
-          id: user.id,
-          name: user.name, 
-          email: user.email, 
-          tnt_no: user.tnt_no || "TNT-2464",
-          semester: user.semester || "Semester 4",
-          section: user.section || "B",
-          major: user.major || null,
-          phone: user.phone || "Not provided",
-          address: user.address || "Not provided",
-          bio: user.bio || "Not provided",
-          avatarUrl: user.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80'
-        } 
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Database error' });
-  }
-});
-
-// --- UPDATE PROFILE API ---
-app.post('/auth/update-profile', async (req, res) => {
-  const { userId, name, studentId, semester, section, major, phone, address, bio } = req.body;
-  try {
-    const parsedUserId = Number(userId);
-    if (!parsedUserId || isNaN(parsedUserId)) {
-      return res.status(400).json({ error: 'Invalid User ID' });
-    }
-
-    await db.query(
-      'UPDATE users SET name = ?, tnt_no = ?, semester = ?, section = ?, major = ?, phone = ?, address = ?, bio = ? WHERE id = ?',
-      [
-        name, 
-        studentId, 
-        semester, 
-        section, 
-        major || null, 
-        phone === 'Not provided' || !phone ? null : phone, 
-        address === 'Not provided' || !address ? null : address, 
-        bio === 'Not provided' || !bio ? null : bio, 
-        parsedUserId
-      ]
-    );
-    res.status(200).json({ message: 'Profile updated successfully in database' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to update profile' });
-  }
-});
-
-// --- PROFILE PICTURE UPLOAD API ---
-app.post('/auth/upload-avatar', upload.single('avatar'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    const userId = req.body.userId;
-    const backendUrl = process.env.BACKEND_URL || 'https://classsync-portal-production.up.railway.app';
-    const avatarUrl = `${backendUrl}/uploads/${req.file.filename}`;
-
-    await db.query('UPDATE users SET avatar_url = ? WHERE id = ?', [avatarUrl, userId]);
-
-    res.status(200).json({ 
-      message: 'Profile picture uploaded successfully', 
-      avatarUrl 
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Database or upload error' });
-  }
-});
-
-// --- GOOGLE AUTHENTICATION API ---
+// Google Auth Routes
 app.get('/auth/google',
   passport.authenticate('google', { scope: ['profile', 'email'] })
 );
 
-app.get('/auth/google/callback', 
-  passport.authenticate('google', { failureRedirect: 'https://classsync-portal.vercel.app/login' }),
-  function(req, res) {
-    res.redirect('https://classsync-portal.vercel.app/dashboard');
+app.get('/auth/google/callback',
+  passport.authenticate('google', { failureRedirect: '/' }),
+  (req, res) => {
+    // Successful authentication, redirect to frontend dashboard/home
+    res.redirect(`${process.env.BACKEND_URL || 'https://classsync-portal-production.up.railway.app'}/dashboard`);
   }
 );
 
-app.get('/', (req, res) => {
-    res.send("Backend is running!");
+// Basic Health Check / Test Route
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date() });
 });
 
-// --- Railway Dynamic Port Binding (Fixed) ---
+// Dynamic Port Assignment for Railway / Cloud deployment
 const PORT = process.env.PORT || 3000;
-
-app.listen(Number(PORT), '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server is running smoothly on port ${PORT}`);
 });
