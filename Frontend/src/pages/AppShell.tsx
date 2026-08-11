@@ -7,8 +7,9 @@ import Calendar from './Calendar'
 import Profile from './Profile'
 import Settings from './Settings'
 import Attendance from './Attendance' 
+import Discussion from './Discussion'
 
-type Screen = 'dashboard' | 'subjects' | 'attendance' | 'announcements' | 'assignments' | 'calendar' | 'profile' | 'settings'
+type Screen = 'dashboard' | 'subjects' | 'attendance' | 'announcements' | 'assignments' | 'calendar' | 'discussion' | 'profile' | 'settings'
 
 interface Props {
   role: Role
@@ -453,6 +454,7 @@ export default function AppShell({ role, onLogout, isDarkMode, setIsDarkMode, la
     { id: 'announcements', label: translations[lang].nav.announcements, icon: Icon.bell, badge: '3' },
     { id: 'assignments', label: translations[lang].nav.assignments, icon: Icon.clip },
     { id: 'calendar', label: translations[lang].nav.calendar, icon: Icon.cal },
+    { id: 'discussion', label: 'Discussion', icon: '💬' },
     { id: 'profile', label: translations[lang].nav.profile, icon: Icon.user },
     { id: 'settings', label: translations[lang].nav.settings, icon: Icon.cog },
   ]
@@ -629,6 +631,8 @@ export default function AppShell({ role, onLogout, isDarkMode, setIsDarkMode, la
             <Calendar role={role} isDarkMode={isDarkMode} />
           )}
 
+          {activeScreen === 'discussion' && <Discussion isDarkMode={isDarkMode} />}
+
           {/* Profile Screen */}
           {activeScreen === 'profile' && (
             <Profile role={role} isDarkMode={isDarkMode} />
@@ -645,6 +649,7 @@ export default function AppShell({ role, onLogout, isDarkMode, setIsDarkMode, la
            activeScreen !== 'announcements' && 
            activeScreen !== 'assignments' && 
            activeScreen !== 'calendar' && 
+           activeScreen !== 'discussion' && 
            activeScreen !== 'profile' && 
            activeScreen !== 'settings' && (
              <div className={`p-6 rounded-2xl border shadow-sm ${isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-gray-100'}`}>

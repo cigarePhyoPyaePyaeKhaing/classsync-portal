@@ -13,6 +13,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const FRONTEND_URL = (process.env.FRONTEND_URL || 'https://classsync-portal.vercel.app').replace(/\/$/, '');
 const JWT_SECRET = process.env.JWT_SECRET || process.env.SESSION_SECRET;
+const liveClients = new Set();
 
 if (process.env.NODE_ENV === 'production' && !JWT_SECRET) {
   throw new Error('JWT_SECRET must be set in production.');
@@ -58,7 +59,7 @@ function publicUser(user) {
     address: user.address,
     bio: user.bio,
     avatarUrl: user.avatar_url,
-    role: 'student',
+    role: user.role === 'cr' ? 'cr' : 'student',
   };
 }
 
@@ -80,6 +81,24 @@ function authenticateToken(req, res, next) {
   } catch {
     return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
   }
+}
+
+function broadcast(type, payload) {
+  const event = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const client of liveClients) client.write(event);
+}
+
+async function currentUser(userId) {
+  const [users] = await db.execute('SELECT * FROM users WHERE id = ? LIMIT 1', [userId]);
+  return users[0] || null;
+}
+
+function requireCr(req, res, next) {
+  currentUser(req.auth.sub).then((user) => {
+    if (!user || user.role !== 'cr') return res.status(403).json({ error: 'Class Rep permission is required.' });
+    req.currentUser = user;
+    return next();
+  }).catch(next);
 }
 
 function validPassword(password) {
@@ -206,6 +225,64 @@ app.get('/auth/me', authenticateToken, async (req, res, next) => {
   } catch (error) {
     return next(error);
   }
+});
+
+// A fetch-based SSE stream keeps every logged-in browser in sync without a polling loop.
+app.get('/api/live', authenticateToken, (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write('event: connected\ndata: {}\n\n');
+  liveClients.add(res);
+  req.on('close', () => liveClients.delete(res));
+});
+
+async function discussionChannel(req) {
+  const scope = req.params.scope;
+  const semester = String(req.query.semester || req.body.semester || '').trim();
+  const section = String(req.query.section || req.body.section || '').trim();
+  const user = await currentUser(req.auth.sub);
+  if (!user) return { error: 'Account not found.' };
+  if (!['section', 'semester'].includes(scope) || !semester || (scope === 'section' && !section)) {
+    return { error: 'A valid discussion channel is required.' };
+  }
+  if (user.semester && user.semester !== semester) return { error: 'You cannot access another semester discussion.' };
+  if (scope === 'section' && user.section && user.section !== section) return { error: 'You cannot access another section discussion.' };
+  return { scope, semester, section: scope === 'section' ? section : null, user };
+}
+
+app.get('/api/discussions/:scope/messages', authenticateToken, async (req, res, next) => {
+  try {
+    const channel = await discussionChannel(req);
+    if (channel.error) return res.status(403).json({ error: channel.error });
+    const [messages] = await db.execute(
+      `SELECT m.id, m.scope, m.semester, m.section, m.body, m.created_at, u.id AS sender_id, u.name AS sender_name, u.avatar_url
+       FROM discussion_messages m JOIN users u ON u.id = m.sender_id
+       WHERE m.scope = ? AND m.semester = ? AND (m.section <=> ?) ORDER BY m.id DESC LIMIT 100`,
+      [channel.scope, channel.semester, channel.section],
+    );
+    return res.json({ messages: messages.reverse() });
+  } catch (error) { return next(error); }
+});
+
+app.post('/api/discussions/:scope/messages', authenticateToken, async (req, res, next) => {
+  try {
+    const channel = await discussionChannel(req);
+    const body = typeof req.body.body === 'string' ? req.body.body.trim() : '';
+    if (channel.error) return res.status(403).json({ error: channel.error });
+    if (!body || body.length > 1000) return res.status(400).json({ error: 'Message must contain 1 to 1000 characters.' });
+    const [result] = await db.execute(
+      'INSERT INTO discussion_messages (scope, semester, section, sender_id, body) VALUES (?, ?, ?, ?, ?)',
+      [channel.scope, channel.semester, channel.section, channel.user.id, body],
+    );
+    const message = { id: result.insertId, scope: channel.scope, semester: channel.semester, section: channel.section,
+      body, created_at: new Date().toISOString(), sender_id: channel.user.id, sender_name: channel.user.name, avatar_url: channel.user.avatar_url };
+    broadcast('discussion.message', message);
+    return res.status(201).json({ message });
+  } catch (error) { return next(error); }
 });
 
 app.use((error, _req, res, _next) => {
