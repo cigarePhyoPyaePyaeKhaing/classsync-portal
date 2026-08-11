@@ -14,6 +14,9 @@ const fs = require('fs');
 
 const app = express();
 
+// --- Railway Reverse Proxy Setup ---
+app.set('trust proxy', 1);
+
 app.use(cors({
     origin: ['http://localhost:8443', 'http://localhost:5173', 'https://classsync-portal.vercel.app'],
     credentials: true 
@@ -51,7 +54,7 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// --- UPLOADS FOLDER & MULTER SETUP FOR PROFILE PICTURES ---
+// --- UPLOADS FOLDER & MULTER SETUP ---
 if (!fs.existsSync('./uploads')) {
     fs.mkdirSync('./uploads');
 }
@@ -268,13 +271,8 @@ app.get('/', (req, res) => {
     res.send("Backend is running!");
 });
 
-// Railway အတွက် အရေးကြီးသော Dynamic Port Binding
-const PORT = process.env.PORT;
-
-if (!PORT) {
-  console.error("ERROR: PORT environment variable is missing!");
-  process.exit(1);
-}
+// --- Railway Dynamic Port Binding (Fixed) ---
+const PORT = process.env.PORT || 3000;
 
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
