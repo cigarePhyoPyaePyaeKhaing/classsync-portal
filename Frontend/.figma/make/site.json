@@ -1,0 +1,11 @@
+{
+  "title": "ClassSync",
+  "description": "Create intuitive UI sketches effortlessly with this web application, designed for designers and developers to streamline their workflow and enhance collaboration.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
