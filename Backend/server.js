@@ -268,7 +268,13 @@ app.get('/', (req, res) => {
     res.send("Backend is running!");
 });
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, '0.0.0.0', () => {
+const PORT = process.env.PORT; // Railway က ပေးတဲ့ Port ကိုသာ တိုက်ရိုက်ယူပါ
+
+if (!PORT) {
+  console.error("ERROR: PORT environment variable is missing!");
+  process.exit(1);
+}
+
+app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
 });
