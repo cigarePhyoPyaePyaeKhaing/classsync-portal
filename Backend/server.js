@@ -268,7 +268,8 @@ app.get('/', (req, res) => {
     res.send("Backend is running!");
 });
 
-const PORT = process.env.PORT; // Railway က ပေးတဲ့ Port ကိုသာ တိုက်ရိုက်ယူပါ
+// Railway အတွက် အရေးကြီးသော Dynamic Port Binding
+const PORT = process.env.PORT;
 
 if (!PORT) {
   console.error("ERROR: PORT environment variable is missing!");
