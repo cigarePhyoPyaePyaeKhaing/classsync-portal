@@ -15,7 +15,7 @@ const fs = require('fs');
 const app = express();
 
 app.use(cors({
-    origin: 'http://localhost:8443',
+    origin: ['http://localhost:8443', 'http://localhost:5173', 'https://classsync-portal.vercel.app'],
     credentials: true 
 }));
 app.use(express.json());
@@ -72,7 +72,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: "http://localhost:5000/auth/google/callback"
+    callbackURL: process.env.CALLBACK_URL || "https://classsync-portal-production.up.railway.app/auth/google/callback"
   },
   async function(accessToken, refreshToken, profile, done) {
     try {
@@ -237,7 +237,8 @@ app.post('/auth/upload-avatar', upload.single('avatar'), async (req, res) => {
     }
 
     const userId = req.body.userId;
-    const avatarUrl = `http://localhost:5000/uploads/${req.file.filename}`;
+    const backendUrl = process.env.BACKEND_URL || 'https://classsync-portal-production.up.railway.app';
+    const avatarUrl = `${backendUrl}/uploads/${req.file.filename}`;
 
     await db.query('UPDATE users SET avatar_url = ? WHERE id = ?', [avatarUrl, userId]);
 
@@ -257,9 +258,9 @@ app.get('/auth/google',
 );
 
 app.get('/auth/google/callback', 
-  passport.authenticate('google', { failureRedirect: 'http://localhost:8443/login' }),
+  passport.authenticate('google', { failureRedirect: 'https://classsync-portal.vercel.app/login' }),
   function(req, res) {
-    res.redirect('http://localhost:8443/dashboard');
+    res.redirect('https://classsync-portal.vercel.app/dashboard');
   }
 );
 
@@ -269,5 +270,5 @@ app.get('/', (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
