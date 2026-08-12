@@ -21,14 +21,25 @@ public class EmailService {
     @Value("${brevo.sender.name:ClassSync Portal}")
     private String senderName;
 
-    public void sendOtpEmail(String recipientEmail, String otp) throws Exception {
-        if (brevoApiKey == null || brevoApiKey.isEmpty()) {
-            System.out.println("==========================================");
-            System.out.println("BREVO API KEY NOT SET. OTP FOR " + recipientEmail + ": " + otp);
-            System.out.println("==========================================");
-            return;
-        }
+    @Value("${resend.api.key:}")
+    private String resendApiKey;
 
+    @Value("${resend.from:ClassSync <onboarding@resend.dev>}")
+    private String resendFrom;
+
+    public void sendOtpEmail(String recipientEmail, String otp) throws Exception {
+        if (brevoApiKey != null && !brevoApiKey.isEmpty()) {
+            sendViaBrevo(recipientEmail, otp);
+        } else if (resendApiKey != null && !resendApiKey.isEmpty()) {
+            sendViaResend(recipientEmail, otp);
+        } else {
+            System.out.println("==========================================");
+            System.out.println("NO EMAIL API KEY SET. OTP FOR " + recipientEmail + ": " + otp);
+            System.out.println("==========================================");
+        }
+    }
+
+    private void sendViaBrevo(String recipientEmail, String otp) throws Exception {
         String jsonBody = "{"
                 + "\"sender\": {\"name\": \"" + senderName + "\", \"email\": \"" + senderEmail + "\"},"
                 + "\"to\": [{\"email\": \"" + recipientEmail + "\"}],"
@@ -53,6 +64,33 @@ public class EmailService {
 
         if (response.statusCode() != 201 && response.statusCode() != 200) {
             throw new RuntimeException("Brevo API returned status " + response.statusCode() + ": " + response.body());
+        }
+    }
+
+    private void sendViaResend(String recipientEmail, String otp) throws Exception {
+        String jsonBody = "{"
+                + "\"from\": \"" + resendFrom + "\","
+                + "\"to\": [\"" + recipientEmail + "\"],"
+                + "\"subject\": \"Your ClassSync verification code\","
+                + "\"html\": \"<p>Your ClassSync verification code is:</p><h1>" + otp + "</h1><p>Enter this code to complete registration.</p>\""
+                + "}";
+
+        HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("https://api.resend.com/emails"))
+                .header("Authorization", "Bearer " + resendApiKey)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                .build();
+
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() != 200 && response.statusCode() != 201) {
+            throw new RuntimeException("Resend API returned status " + response.statusCode() + ": " + response.body());
         }
     }
 }
