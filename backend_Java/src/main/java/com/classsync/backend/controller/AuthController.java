@@ -156,18 +156,21 @@ public class AuthController {
         String identifier = request.get("identifier");
         String password = request.get("password");
 
-        if (identifier == null || password == null) {
+        if (identifier == null || password == null || identifier.trim().isEmpty() || password.trim().isEmpty()) {
             return ResponseEntity.status(400).body(Map.of("error", "Identifier and password are required."));
         }
 
-        Optional<User> userOpt = userRepository.findByEmail(identifier.trim().toLowerCase());
+        String trimmedId = identifier.trim();
+        // Email သို့မဟုတ် TNT No ဖြင့် အောင်မြင်စွာ ရှာဖွေခြင်း
+        Optional<User> userOpt = userRepository.findByEmailOrTntNo(trimmedId.toLowerCase(), trimmedId);
+        
         if (userOpt.isEmpty()) {
-            return ResponseEntity.status(401).body(Map.of("error", "Invalid email or password."));
+            return ResponseEntity.status(401).body(Map.of("error", "Invalid email/TNT No or password."));
         }
 
         User user = userOpt.get();
         if (user.getPassword() == null || !passwordEncoder.matches(password, user.getPassword())) {
-            return ResponseEntity.status(401).body(Map.of("error", "Invalid email or password."));
+            return ResponseEntity.status(401).body(Map.of("error", "Invalid email/TNT No or password."));
         }
         if (Boolean.FALSE.equals(user.getIsVerified())) {
             return ResponseEntity.status(403).body(Map.of("error", "Verify your email before signing in."));
@@ -181,6 +184,9 @@ public class AuthController {
             "id", user.getId(),
             "name", user.getName() != null ? user.getName() : "",
             "email", user.getEmail(),
+            "tntNo", user.getTntNo() != null ? user.getTntNo() : "",
+            "semester", user.getSemester() != null ? user.getSemester() : "",
+            "section", user.getSection() != null ? user.getSection() : "",
             "role", user.getRole() != null ? user.getRole() : "student"
         ));
 
