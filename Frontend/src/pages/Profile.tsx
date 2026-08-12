@@ -134,17 +134,19 @@ export default function Profile({ role: initialRole = 'student', isDarkMode = fa
 
       const response = await fetch(`${API_BASE_URL}/auth/upload-avatar`, {
         method: 'POST',
+        headers: { Authorization: `Bearer ${parsed.token}` },
         body: formData,
       })
       const data = await response.json()
 
       if (!response.ok) throw new Error(data.error || 'Upload failed')
 
-      setUser((prev) => ({ ...prev, avatarUrl: data.avatarUrl }))
+      const avatarUrl = data.data?.avatarUrl || data.avatarUrl
+      setUser((prev) => ({ ...prev, avatarUrl }))
 
       localStorage.setItem('classsync_user', JSON.stringify({
         ...parsed,
-        avatarUrl: data.avatarUrl,
+        avatarUrl,
       }))
 
       showToast('Profile picture uploaded successfully!')
@@ -176,13 +178,13 @@ export default function Profile({ role: initialRole = 'student', isDarkMode = fa
     }
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/update-profile`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const stored = localStorage.getItem('classsync_user')
+      const parsed = stored ? JSON.parse(stored) : {}
+      const response = await fetch(`${API_BASE_URL}/auth/profile`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${parsed.token}` },
         body: JSON.stringify({
-          userId: user.id,
           name: draft.name,
-          studentId: draft.studentId,
           semester: draft.semester,
           section: draft.section,
           major: calculatedMajor,
@@ -197,8 +199,6 @@ export default function Profile({ role: initialRole = 'student', isDarkMode = fa
 
       setUser(updatedUser)
 
-      const stored = localStorage.getItem('classsync_user')
-      const parsed = stored ? JSON.parse(stored) : {}
       localStorage.setItem('classsync_user', JSON.stringify({
         ...parsed,
         name: draft.name,
