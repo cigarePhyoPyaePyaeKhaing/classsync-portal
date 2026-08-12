@@ -6,7 +6,5 @@ import java.util.Optional;
 
 public interface UserRepository extends JpaRepository<User, Long> {
     Optional<User> findByEmail(String email);
-    
-    // Email သို့မဟုတ် TNT No ဖြင့် ရှာဖွေရန်
     Optional<User> findByEmailOrTntNo(String email, String tntNo);
 }

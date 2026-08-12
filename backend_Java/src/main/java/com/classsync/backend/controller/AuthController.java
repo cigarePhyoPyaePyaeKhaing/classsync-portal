@@ -3,6 +3,7 @@ package com.classsync.backend.controller;
 import com.classsync.backend.model.User;
 import com.classsync.backend.repository.UserRepository;
 import com.classsync.backend.security.JwtUtil;
+import com.classsync.backend.service.EmailService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -15,7 +16,7 @@ import java.util.Random;
 
 @RestController
 @RequestMapping("/auth")
-@CrossOrigin(origins = "https://classsync-portal.vercel.app")
+@CrossOrigin(origins = {"https://classsync-portal.vercel.app", "http://localhost:5173"})
 public class AuthController {
 
     @Autowired
@@ -23,6 +24,9 @@ public class AuthController {
 
     @Autowired
     private JwtUtil jwtUtil;
+
+    @Autowired
+    private EmailService emailService;
 
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
@@ -47,7 +51,7 @@ public class AuthController {
 
             String normalizedEmail = email != null ? email.trim().toLowerCase() : "";
             if (fullName == null || fullName.trim().isEmpty() || normalizedEmail.isEmpty() || tntNo == null || !isValidPassword(password)) {
-                return ResponseEntity.status(400).body(Map.of("error", "Provide a name, email, TNT number, and a strong password (min 8 chars, uppercase, lowercase, number, special char)."));
+                return ResponseEntity.status(400).body(Map.of("error", "Provide a name, email, TNT number, and a strong password."));
             }
 
             String otp = String.format("%06d", new Random().nextInt(900000) + 100000);
@@ -81,12 +85,14 @@ public class AuthController {
 
             userRepository.save(user);
 
-            System.out.println("==========================================");
-            System.out.println("VERIFICATION OTP FOR " + normalizedEmail + ": " + otp);
-            System.out.println("==========================================");
+            try {
+                emailService.sendOtpEmail(normalizedEmail, otp);
+            } catch (Exception e) {
+                System.out.println("Email sending failed, check console/logs for OTP: " + otp);
+            }
 
             Map<String, String> responseBody = new HashMap<>();
-            responseBody.put("message", "Verification code generated and sent. (Check server console for OTP in dev mode)");
+            responseBody.put("message", "Verification code generated and sent.");
 
             if (existingOpt.isPresent() && Boolean.FALSE.equals(user.getIsVerified())) {
                 return ResponseEntity.ok(responseBody);
@@ -141,9 +147,11 @@ public class AuthController {
             user.setOtp(otp);
             userRepository.save(user);
 
-            System.out.println("==========================================");
-            System.out.println("RESENT OTP FOR " + normalizedEmail + ": " + otp);
-            System.out.println("==========================================");
+            try {
+                emailService.sendOtpEmail(normalizedEmail, otp);
+            } catch (Exception e) {
+                System.out.println("Resend email failed, OTP: " + otp);
+            }
 
             return ResponseEntity.ok(Map.of("message", "A new verification code was sent."));
         } catch (Exception e) {
@@ -161,7 +169,6 @@ public class AuthController {
         }
 
         String trimmedId = identifier.trim();
-        // Email သို့မဟုတ် TNT No ဖြင့် အောင်မြင်စွာ ရှာဖွေခြင်း
         Optional<User> userOpt = userRepository.findByEmailOrTntNo(trimmedId.toLowerCase(), trimmedId);
         
         if (userOpt.isEmpty()) {

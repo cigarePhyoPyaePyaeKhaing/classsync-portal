@@ -37,24 +37,21 @@ public class GoogleAuthController {
 
         String normalizedEmail = email.trim().toLowerCase();
 
-        // Database ထဲတွင် User ရှိမရှိ ရှာဖွေပြီး၊ မရှိပါက အလိုအလျောက် ဖန်တီးပေးခြင်း
         User user = userRepository.findByEmail(normalizedEmail).orElseGet(() -> {
             User newUser = new User();
             newUser.setEmail(normalizedEmail);
             newUser.setName(name != null ? name : "Google User");
             newUser.setIsVerified(true);
             newUser.setRole("student");
-            newUser.setTntNo("TNT-0000"); // Default TNT No
+            newUser.setTntNo("TNT-0000");
             newUser.setSemester("Semester 1");
             newUser.setSection("A");
             return userRepository.save(newUser);
         });
 
-        // JWT Token ထုတ်ပေးခြင်း
         String token = jwtUtil.generateToken(user.getId(), user.getEmail());
 
         try {
-            // URL Encode ပြုလုပ်ခြင်း
             String encodedToken = URLEncoder.encode(token, StandardCharsets.UTF_8.toString());
             String encodedName = URLEncoder.encode(user.getName() != null ? user.getName() : "", StandardCharsets.UTF_8.toString());
             String encodedEmail = URLEncoder.encode(user.getEmail(), StandardCharsets.UTF_8.toString());
@@ -63,7 +60,6 @@ public class GoogleAuthController {
             String encodedSection = URLEncoder.encode(user.getSection() != null ? user.getSection() : "", StandardCharsets.UTF_8.toString());
             String encodedRole = URLEncoder.encode(user.getRole() != null ? user.getRole() : "student", StandardCharsets.UTF_8.toString());
 
-            // Frontend (Vercel) သို့ Token နှင့် User အချက်အလက်များ အပြည့်အစုံ ပို့ဆောင်ပေးခြင်း
             String frontendRedirectUrl = "https://classsync-portal.vercel.app/dashboard?token=" + encodedToken +
                     "&name=" + encodedName +
                     "&email=" + encodedEmail +
