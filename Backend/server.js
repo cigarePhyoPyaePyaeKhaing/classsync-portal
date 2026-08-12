@@ -128,7 +128,70 @@ function validPassword(password) {
 }
 
 async function sendOtp(email, otp) {
-  if (!transporter) throw new Error('Email delivery is not configured.');
+  // Brevo uses HTTPS instead of SMTP, so it works on hosts that block outbound
+  // SMTP ports (including many Railway deployments).
+  if (process.env.BREVO_API_KEY) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'api-key': process.env.BREVO_API_KEY,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          sender: {
+            name: process.env.BREVO_SENDER_NAME || 'ClassSync Portal',
+            email: process.env.BREVO_SENDER_EMAIL,
+          },
+          to: [{ email }],
+          subject: 'Your ClassSync verification code',
+          textContent: `Your ClassSync verification code is ${otp}. Enter this code to complete registration.`,
+          htmlContent: `<p>Your ClassSync verification code is:</p><h1>${otp}</h1><p>Enter this code to complete registration.</p>`,
+        }),
+      });
+      if (!response.ok) {
+        const details = await response.text();
+        throw new Error(`Brevo API returned ${response.status}: ${details}`);
+      }
+      return;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  if (process.env.RESEND_API_KEY) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'classsync-portal/1.0',
+        },
+        body: JSON.stringify({
+          from: process.env.RESEND_FROM || 'ClassSync <onboarding@resend.dev>',
+          to: [email],
+          subject: 'Your ClassSync verification code',
+          text: `Your ClassSync verification code is ${otp}.`,
+          html: `<p>Your ClassSync verification code is:</p><h1>${otp}</h1><p>Enter this code to complete registration.</p>`,
+        }),
+      });
+      if (!response.ok) {
+        const details = await response.text();
+        throw new Error(`Resend rejected the email (${response.status}): ${details}`);
+      }
+      return;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  if (!transporter) throw new Error('Email delivery is not configured. Set BREVO_API_KEY, RESEND_API_KEY, or Gmail SMTP variables.');
   await transporter.sendMail({
     from: process.env.EMAIL_USER,
     to: email,
