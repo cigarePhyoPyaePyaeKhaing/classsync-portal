@@ -45,15 +45,21 @@ app.use(cors({
     if (!origin || allowedOrigins.has(origin)) return callback(null, true);
     return callback(new Error('Origin is not allowed by CORS'));
   },
-  methods: ['GET', 'POST'],
+  methods: ['GET', 'POST', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 app.use(passport.initialize());
 
 const transporter = process.env.EMAIL_USER && process.env.EMAIL_PASS
   ? nodemailer.createTransport({
-      service: 'gmail',
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
+      requireTLS: true,
       auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 20_000,
     })
   : null;
 
@@ -172,20 +178,48 @@ app.post('/auth/register', async (req, res, next) => {
     }
     if (!transporter) return res.status(503).json({ error: 'Email verification is not configured yet.' });
 
-    const [matches] = await db.execute('SELECT id FROM users WHERE email = ? OR tnt_no = ? LIMIT 1', [normalizedEmail, tntNo.trim()]);
-    if (matches.length) return res.status(409).json({ error: 'An account already uses this email or TNT number.' });
-
     const otp = String(Math.floor(100000 + Math.random() * 900000));
     const passwordHash = await bcrypt.hash(password, 12);
-    await db.execute(
-      'INSERT INTO users (name, email, tnt_no, password, semester, section, otp, is_verified) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE)',
-      [fullName.trim(), normalizedEmail, tntNo.trim(), passwordHash, semester || null, section || null, otp],
-    );
-    await sendOtp(normalizedEmail, otp);
-    return res.status(201).json({ message: 'Verification code sent.' });
+    const [matches] = await db.execute('SELECT * FROM users WHERE email = ? OR tnt_no = ? LIMIT 1', [normalizedEmail, tntNo.trim()]);
+    const existing = matches[0];
+    if (existing?.is_verified || (existing && existing.email !== normalizedEmail)) {
+      return res.status(409).json({ error: 'An account already uses this email or TNT number.' });
+    }
+
+    if (existing) {
+      await db.execute('UPDATE users SET name=?, tnt_no=?, password=?, semester=?, section=?, otp=? WHERE id=?',
+        [fullName.trim(), tntNo.trim(), passwordHash, semester || null, section || null, otp, existing.id]);
+    } else {
+      await db.execute('INSERT INTO users (name, email, tnt_no, password, semester, section, otp, is_verified) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE)',
+        [fullName.trim(), normalizedEmail, tntNo.trim(), passwordHash, semester || null, section || null, otp]);
+    }
+    try {
+      await sendOtp(normalizedEmail, otp);
+      return res.status(existing ? 200 : 201).json({ message: 'Verification code sent.' });
+    } catch (mailError) {
+      console.error('OTP email failed:', mailError.message);
+      return res.status(502).json({ error: 'Could not send the verification email. Please try again shortly.' });
+    }
   } catch (error) {
     return next(error);
   }
+});
+
+app.post('/auth/resend-otp', async (req, res, next) => {
+  try {
+    const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const [users] = await db.execute('SELECT id FROM users WHERE email = ? AND is_verified = FALSE LIMIT 1', [email]);
+    if (!users.length) return res.status(404).json({ error: 'No unverified account was found for this email.' });
+    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    await db.execute('UPDATE users SET otp = ? WHERE id = ?', [otp, users[0].id]);
+    try {
+      await sendOtp(email, otp);
+      return res.json({ message: 'A new verification code was sent.' });
+    } catch (mailError) {
+      console.error('OTP resend failed:', mailError.message);
+      return res.status(502).json({ error: 'Could not send the verification email. Please try again shortly.' });
+    }
+  } catch (error) { return next(error); }
 });
 
 app.post('/auth/verify-otp', async (req, res, next) => {

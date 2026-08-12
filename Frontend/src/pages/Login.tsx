@@ -263,6 +263,27 @@ export default function Login({
     }
   }
 
+  const handleResendOtp = async () => {
+    if (resendTimer > 0 || !email) return
+    setErrorMessage('')
+    setIsLoading(true)
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/resend-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error)
+      setResendTimer(30)
+      showToast('New verification code sent!')
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Could not resend the verification code.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   const handleForgotSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!resetEmailOrTnt) return
@@ -428,13 +449,8 @@ export default function Login({
                   <span>Didn't receive code?</span>
                   <button
                     type="button"
-                    onClick={() => {
-                      if (resendTimer === 0) {
-                        setResendTimer(30)
-                        showToast('New verification code sent!')
-                      }
-                    }}
-                    disabled={resendTimer > 0}
+                    onClick={handleResendOtp}
+                    disabled={resendTimer > 0 || isLoading}
                     className={`font-semibold cursor-pointer ${resendTimer > 0 ? 'opacity-50 cursor-not-allowed' : 'text-[#007782] hover:underline'}`}
                   >
                     {resendTimer > 0 ? `Resend in ${resendTimer}s` : 'Resend Code'}
