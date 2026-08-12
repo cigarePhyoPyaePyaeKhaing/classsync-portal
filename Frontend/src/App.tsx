@@ -66,8 +66,16 @@ export default function App() {
     try {
       const user = JSON.parse(savedUser)
       if (user.isLoggedIn && user.token) {
-        setRole(user.role === 'cr' ? 'cr' : 'student')
-        setScreen('app')
+        fetch(`${API_BASE_URL}/auth/me`, { headers: { Authorization: `Bearer ${user.token}` } })
+          .then(async (response) => {
+            const data = await response.json()
+            if (!response.ok) throw new Error(data.error)
+            const verifiedRole: Role = data.user.role === 'cr' ? 'cr' : 'student'
+            localStorage.setItem('classsync_user', JSON.stringify({ ...data.user, role: verifiedRole, isLoggedIn: true, token: user.token }))
+            setRole(verifiedRole)
+            setScreen('app')
+          })
+          .catch(() => localStorage.removeItem('classsync_user'))
       }
     } catch {
       localStorage.removeItem('classsync_user')
@@ -126,7 +134,7 @@ export default function App() {
         localStorage.removeItem('classsync_user')
         setScreen('landing')
       }}
-      onSwitchRole={() => setRole((r) => (r === 'student' ? 'cr' : 'student'))}
+      onSwitchRole={() => undefined}
       isDarkMode={isDarkMode}
       setIsDarkMode={setIsDarkMode}
       lang={lang}

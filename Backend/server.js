@@ -5,6 +5,8 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
+const multer = require('multer');
+const path = require('path');
 const db = require('./db');
 
 require('dotenv').config();
@@ -14,6 +16,14 @@ const PORT = process.env.PORT || 3000;
 const FRONTEND_URL = (process.env.FRONTEND_URL || 'https://classsync-portal.vercel.app').replace(/\/$/, '');
 const JWT_SECRET = process.env.JWT_SECRET || process.env.SESSION_SECRET;
 const liveClients = new Set();
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: path.join(__dirname, 'uploads'),
+    filename: (_req, file, done) => done(null, `user_${Date.now()}${path.extname(file.originalname).toLowerCase()}`),
+  }),
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (_req, file, done) => done(null, /^image\/(png|jpe?g|webp)$/.test(file.mimetype)),
+});
 
 if (process.env.NODE_ENV === 'production' && !JWT_SECRET) {
   throw new Error('JWT_SECRET must be set in production.');
@@ -29,6 +39,7 @@ const allowedOrigins = new Set([
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(cors({
   origin(origin, callback) {
     if (!origin || allowedOrigins.has(origin)) return callback(null, true);
@@ -227,6 +238,28 @@ app.get('/auth/me', authenticateToken, async (req, res, next) => {
   }
 });
 
+app.patch('/auth/profile', authenticateToken, async (req, res, next) => {
+  try {
+    const allowed = ['name', 'semester', 'section', 'major', 'phone', 'address', 'bio'];
+    const values = allowed.filter((field) => typeof req.body[field] === 'string').map((field) => [field, req.body[field].trim()]);
+    if (!values.length) return res.status(400).json({ error: 'No valid profile fields were supplied.' });
+    const set = values.map(([field]) => `\`${field}\` = ?`).join(', ');
+    await db.execute(`UPDATE users SET ${set} WHERE id = ?`, [...values.map(([, value]) => value), req.auth.sub]);
+    const user = await currentUser(req.auth.sub);
+    broadcast('profile.updated', publicUser(user));
+    return res.json({ data: publicUser(user) });
+  } catch (error) { return next(error); }
+});
+
+app.post('/auth/upload-avatar', authenticateToken, upload.single('avatar'), async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Upload a PNG, JPG, or WEBP image no larger than 2 MB.' });
+    const avatarUrl = `${process.env.BACKEND_URL || ''}/uploads/${req.file.filename}`;
+    await db.execute('UPDATE users SET avatar_url = ? WHERE id = ?', [avatarUrl, req.auth.sub]);
+    return res.json({ data: { avatarUrl } });
+  } catch (error) { return next(error); }
+});
+
 // A fetch-based SSE stream keeps every logged-in browser in sync without a polling loop.
 app.get('/api/live', authenticateToken, (req, res) => {
   res.writeHead(200, {
@@ -238,6 +271,65 @@ app.get('/api/live', authenticateToken, (req, res) => {
   res.write('event: connected\ndata: {}\n\n');
   liveClients.add(res);
   req.on('close', () => liveClients.delete(res));
+});
+
+async function scopedUser(req) {
+  const user = await currentUser(req.auth.sub);
+  if (!user || !user.semester || !user.section) return null;
+  return user;
+}
+
+app.get('/api/announcements', authenticateToken, async (req, res, next) => {
+  try {
+    const user = await scopedUser(req);
+    if (!user) return res.status(400).json({ error: 'Complete your semester and section in your profile first.' });
+    const [items] = await db.execute(`SELECT a.*, u.name AS author_name FROM announcements a JOIN users u ON u.id=a.author_id WHERE a.semester=? AND a.section=? ORDER BY a.is_pinned DESC, a.created_at DESC`, [user.semester, user.section]);
+    res.json({ data: items });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/announcements', authenticateToken, requireCr, async (req, res, next) => {
+  try {
+    const user = req.currentUser; const title = String(req.body.title || '').trim(); const body = String(req.body.body || '').trim();
+    if (!user.semester || !user.section || !title || !body) return res.status(400).json({ error: 'Title, message, semester, and section are required.' });
+    const [result] = await db.execute('INSERT INTO announcements (title,body,category,semester,section,is_urgent,is_pinned,author_id) VALUES (?,?,?,?,?,?,?,?)', [title, body, req.body.category || 'General', user.semester, user.section, !!req.body.isUrgent, !!req.body.isPinned, user.id]);
+    const [rows] = await db.execute('SELECT a.*, ? AS author_name FROM announcements a WHERE a.id=?', [user.name, result.insertId]);
+    broadcast('announcement.created', rows[0]); res.status(201).json({ data: rows[0] });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/assignments', authenticateToken, async (req, res, next) => {
+  try { const user = await scopedUser(req); if (!user) return res.status(400).json({ error: 'Complete your profile scope first.' });
+    const [items] = await db.execute(`SELECT a.*, s.submitted_at, s.grade, s.feedback FROM assignments a LEFT JOIN assignment_submissions s ON s.assignment_id=a.id AND s.student_id=? WHERE a.semester=? AND a.section=? ORDER BY a.due_at`, [user.id, user.semester, user.section]);
+    res.json({ data: items });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/assignments/:id/submit', authenticateToken, async (req, res, next) => {
+  try { const user = await scopedUser(req); if (!user) return res.status(400).json({ error: 'Complete your profile scope first.' });
+    const [items] = await db.execute('SELECT id FROM assignments WHERE id=? AND semester=? AND section=?', [req.params.id, user.semester, user.section]);
+    if (!items.length) return res.status(404).json({ error: 'Assignment not found.' });
+    await db.execute('INSERT INTO assignment_submissions (assignment_id,student_id) VALUES (?,?) ON DUPLICATE KEY UPDATE submitted_at=CURRENT_TIMESTAMP', [req.params.id, user.id]);
+    const data={ assignmentId:Number(req.params.id), studentId:user.id, submittedAt:new Date().toISOString() }; broadcast('assignment.submitted', data); res.json({ data });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/calendar-events', authenticateToken, async (req, res, next) => {
+  try { const user = await scopedUser(req); if (!user) return res.status(400).json({ error: 'Complete your profile scope first.' });
+    const [items] = await db.execute('SELECT * FROM calendar_events WHERE semester=? AND section=? ORDER BY event_date,event_time', [user.semester, user.section]); res.json({ data: items });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/subjects', authenticateToken, async (req, res, next) => {
+  try { const user = await scopedUser(req); if (!user) return res.status(400).json({ error: 'Complete your profile scope first.' });
+    const [items] = await db.execute('SELECT * FROM subjects WHERE semester=? AND section=? ORDER BY code', [user.semester, user.section]); res.json({ data: items });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/attendance', authenticateToken, async (req, res, next) => {
+  try { const user = await scopedUser(req); if (!user) return res.status(400).json({ error: 'Complete your profile scope first.' });
+    const [items] = await db.execute(`SELECT s.id,s.session_date,s.subject_id,r.status FROM attendance_sessions s LEFT JOIN attendance_records r ON r.session_id=s.id AND r.student_id=? WHERE s.semester=? AND s.section=? ORDER BY s.session_date DESC`, [user.id,user.semester,user.section]); res.json({ data: items });
+  } catch (error) { next(error); }
 });
 
 async function discussionChannel(req) {
