@@ -4,199 +4,167 @@ import com.classsync.backend.model.User;
 import com.classsync.backend.repository.UserRepository;
 import com.classsync.backend.security.JwtUtil;
 import com.classsync.backend.service.EmailService;
+import com.classsync.backend.service.SseService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.HashMap;
+import org.springframework.web.multipart.MultipartFile;
+import java.io.File;
+import java.io.IOException;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Random;
 
 @RestController
 @RequestMapping("/auth")
-@CrossOrigin(origins = {"https://classsync-portal.vercel.app", "http://localhost:5173"})
+@SuppressWarnings("null")
 public class AuthController {
+    @Autowired private UserRepository userRepository;
+    @Autowired private PasswordEncoder passwordEncoder;
+    @Autowired private JwtUtil jwtUtil;
+    @Autowired private EmailService emailService;
+    @Autowired private SseService sseService;
+    @Value("${app.backend.url}") private String backendUrl;
 
-    @Autowired
-    private UserRepository userRepository;
+    private User getCurrentUser() {
+        Object principal = SecurityContextHolder.getContext().getAuthentication().getPrincipal();
+        if (principal instanceof Long) {
+            return userRepository.findById((Long) principal).orElseThrow();
+        }
+        throw new RuntimeException("Unauthorized");
+    }
 
-    @Autowired
-    private JwtUtil jwtUtil;
-
-    @Autowired
-    private EmailService emailService;
-
-    private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
-
-    private boolean isValidPassword(String password) {
-        return password != null 
-                && password.length() >= 8 
-                && password.matches(".*[A-Z].*") 
-                && password.matches(".*[a-z].*") 
-                && password.matches(".*\\d.*") 
-                && password.matches(".*[^A-Za-z0-9].*");
+    private boolean validPassword(String password) {
+        return password != null && password.length() >= 8 && password.matches(".*[A-Z].*") && password.matches(".*[a-z].*") && password.matches(".*\\d.*") && password.matches(".*[^A-Za-z0-9].*");
     }
 
     @PostMapping("/register")
-    public ResponseEntity<?> register(@RequestBody Map<String, String> request) {
-        try {
-            String fullName = request.get("fullName");
-            String email = request.get("email");
-            String tntNo = request.get("tntNo");
-            String password = request.get("password");
-            String semester = request.get("semester");
-            String section = request.get("section");
-
-            String normalizedEmail = email != null ? email.trim().toLowerCase() : "";
-            if (fullName == null || fullName.trim().isEmpty() || normalizedEmail.isEmpty() || tntNo == null || !isValidPassword(password)) {
-                return ResponseEntity.status(400).body(Map.of("error", "Provide a name, email, TNT number, and a strong password."));
-            }
-
-            String otp = String.format("%06d", new Random().nextInt(900000) + 100000);
-            String passwordHash = passwordEncoder.encode(password);
-
-            Optional<User> existingOpt = userRepository.findByEmail(normalizedEmail);
-            User user;
-
-            if (existingOpt.isPresent()) {
-                user = existingOpt.get();
-                if (Boolean.TRUE.equals(user.getIsVerified())) {
-                    return ResponseEntity.status(409).body(Map.of("error", "An account already uses this email."));
-                }
-                user.setName(fullName.trim());
-                user.setTntNo(tntNo.trim());
-                user.setPassword(passwordHash);
-                user.setSemester(semester);
-                user.setSection(section);
-                user.setOtp(otp);
-            } else {
-                user = new User();
-                user.setName(fullName.trim());
-                user.setEmail(normalizedEmail);
-                user.setTntNo(tntNo.trim());
-                user.setPassword(passwordHash);
-                user.setSemester(semester);
-                user.setSection(section);
-                user.setOtp(otp);
-                user.setIsVerified(false);
-            }
-
-            userRepository.save(user);
-
-            try {
-                emailService.sendOtpEmail(normalizedEmail, otp);
-            } catch (Exception e) {
-                System.out.println("Email sending failed, check console/logs for OTP: " + otp);
-            }
-
-            Map<String, String> responseBody = new HashMap<>();
-            responseBody.put("message", "Verification code generated and sent.");
-
-            if (existingOpt.isPresent() && Boolean.FALSE.equals(user.getIsVerified())) {
-                return ResponseEntity.ok(responseBody);
-            } else {
-                return ResponseEntity.status(201).body(responseBody);
-            }
-        } catch (Exception e) {
-            return ResponseEntity.status(500).body(Map.of("error", "Registration failed: " + e.getMessage()));
+    public ResponseEntity<?> register(@RequestBody Map<String, String> body) {
+        String email = body.getOrDefault("email", "").toLowerCase().trim();
+        String tntNo = body.getOrDefault("tntNo", "").trim();
+        String password = body.get("password");
+        
+        if (email.isEmpty() || tntNo.isEmpty() || !validPassword(password)) {
+            return ResponseEntity.status(400).body(Map.of("error", "Provide a name, email, TNT number, and a strong password."));
         }
-    }
 
-    @PostMapping("/verify-otp")
-    public ResponseEntity<?> verifyOtp(@RequestBody Map<String, String> request) {
+        User existing = userRepository.findByEmail(email).orElseGet(() -> userRepository.findByTntNo(tntNo).orElse(null));
+        if (existing != null && (existing.getIsVerified() || !existing.getEmail().equals(email))) {
+            return ResponseEntity.status(409).body(Map.of("error", "An account already uses this email or TNT number."));
+        }
+
+        String otp = String.format("%06d", new Random().nextInt(999999));
+        User user = existing != null ? existing : new User();
+        user.setName(body.get("fullName").trim());
+        user.setEmail(email);
+        user.setTntNo(tntNo);
+        user.setPassword(passwordEncoder.encode(password));
+        user.setSemester(body.get("semester"));
+        user.setSection(body.get("section"));
+        user.setOtp(otp);
+        user.setIsVerified(false);
+        userRepository.save(user);
+
         try {
-            String email = request.get("email");
-            String otp = request.get("otp");
-            String normalizedEmail = email != null ? email.trim().toLowerCase() : "";
-
-            Optional<User> userOpt = userRepository.findByEmail(normalizedEmail);
-            if (userOpt.isEmpty()) {
-                return ResponseEntity.status(404).body(Map.of("error", "Account not found."));
-            }
-
-            User user = userOpt.get();
-            if (user.getOtp() == null || !user.getOtp().equals(otp)) {
-                return ResponseEntity.status(400).body(Map.of("error", "That verification code is invalid."));
-            }
-
-            user.setIsVerified(true);
-            user.setOtp(null);
-            userRepository.save(user);
-
-            return ResponseEntity.ok(Map.of("message", "Account verified. You can now sign in."));
+            emailService.sendOtp(email, otp);
+            return ResponseEntity.status(existing != null ? 200 : 201).body(Map.of("message", "Verification code sent."));
         } catch (Exception e) {
-            return ResponseEntity.status(500).body(Map.of("error", "Verification failed: " + e.getMessage()));
+            return ResponseEntity.status(502).body(Map.of("error", "Could not send the verification email."));
         }
     }
 
     @PostMapping("/resend-otp")
-    public ResponseEntity<?> resendOtp(@RequestBody Map<String, String> request) {
+    public ResponseEntity<?> resendOtp(@RequestBody Map<String, String> body) {
+        String email = body.getOrDefault("email", "").toLowerCase().trim();
+        User user = userRepository.findByEmail(email).orElse(null);
+        if (user == null || user.getIsVerified()) return ResponseEntity.status(404).body(Map.of("error", "No unverified account was found for this email."));
+        
+        String otp = String.format("%06d", new Random().nextInt(999999));
+        user.setOtp(otp);
+        userRepository.save(user);
         try {
-            String email = request.get("email");
-            String normalizedEmail = email != null ? email.trim().toLowerCase() : "";
-
-            Optional<User> userOpt = userRepository.findByEmail(normalizedEmail);
-            if (userOpt.isEmpty() || Boolean.TRUE.equals(userOpt.get().getIsVerified())) {
-                return ResponseEntity.status(404).body(Map.of("error", "No unverified account was found for this email."));
-            }
-
-            User user = userOpt.get();
-            String otp = String.format("%06d", new Random().nextInt(900000) + 100000);
-            user.setOtp(otp);
-            userRepository.save(user);
-
-            try {
-                emailService.sendOtpEmail(normalizedEmail, otp);
-            } catch (Exception e) {
-                System.out.println("Resend email failed, OTP: " + otp);
-            }
-
+            emailService.sendOtp(email, otp);
             return ResponseEntity.ok(Map.of("message", "A new verification code was sent."));
         } catch (Exception e) {
-            return ResponseEntity.status(500).body(Map.of("error", "Could not resend OTP: " + e.getMessage()));
+            return ResponseEntity.status(502).body(Map.of("error", "Could not send the verification email."));
         }
     }
 
-    @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody Map<String, String> request) {
-        String identifier = request.get("identifier");
-        String password = request.get("password");
+    @PostMapping("/verify-otp")
+    public ResponseEntity<?> verifyOtp(@RequestBody Map<String, String> body) {
+        String email = body.getOrDefault("email", "").toLowerCase().trim();
+        String otp = body.getOrDefault("otp", "");
+        User user = userRepository.findByEmail(email).orElse(null);
 
-        if (identifier == null || password == null || identifier.trim().isEmpty() || password.trim().isEmpty()) {
-            return ResponseEntity.status(400).body(Map.of("error", "Identifier and password are required."));
+        if (user == null || user.getIsVerified() || !otp.equals(user.getOtp())) {
+            return ResponseEntity.status(400).body(Map.of("error", "That verification code is invalid or has already been used."));
         }
-
-        String trimmedId = identifier.trim();
-        Optional<User> userOpt = userRepository.findByEmailOrTntNo(trimmedId.toLowerCase(), trimmedId);
         
-        if (userOpt.isEmpty()) {
-            return ResponseEntity.status(401).body(Map.of("error", "Invalid email/TNT No or password."));
+        user.setIsVerified(true);
+        user.setOtp(null);
+        userRepository.save(user);
+        return ResponseEntity.ok(Map.of("message", "Account verified. You can now sign in."));
+    }
+
+    @PostMapping("/login")
+    public ResponseEntity<?> login(@RequestBody Map<String, String> body) {
+        String identifier = body.getOrDefault("identifier", "").trim();
+        User user = userRepository.findByEmail(identifier.toLowerCase()).orElseGet(() -> userRepository.findByTntNo(identifier).orElse(null));
+
+        if (user == null || user.getPassword() == null || !passwordEncoder.matches(body.get("password"), user.getPassword())) {
+            return ResponseEntity.status(401).body(Map.of("error", "Invalid email/TNT number or password."));
+        }
+        if (!user.getIsVerified()) return ResponseEntity.status(403).body(Map.of("error", "Verify your email before signing in."));
+
+        return ResponseEntity.ok(Map.of("user", user, "token", jwtUtil.generateToken(user.getId(), user.getEmail())));
+    }
+
+    @GetMapping("/me")
+    public ResponseEntity<?> getMe() {
+        return ResponseEntity.ok(Map.of("user", getCurrentUser()));
+    }
+
+    @PatchMapping("/profile")
+    public ResponseEntity<?> updateProfile(@RequestBody Map<String, String> body) {
+        User user = getCurrentUser();
+        boolean updated = false;
+        if(body.containsKey("name")) { user.setName(body.get("name").trim()); updated = true; }
+        if(body.containsKey("semester")) { user.setSemester(body.get("semester").trim()); updated = true; }
+        if(body.containsKey("section")) { user.setSection(body.get("section").trim()); updated = true; }
+        if(body.containsKey("major")) { user.setMajor(body.get("major").trim()); updated = true; }
+        if(body.containsKey("phone")) { user.setPhone(body.get("phone").trim()); updated = true; }
+        if(body.containsKey("address")) { user.setAddress(body.get("address").trim()); updated = true; }
+        if(body.containsKey("bio")) { user.setBio(body.get("bio").trim()); updated = true; }
+        
+        if (!updated) return ResponseEntity.status(400).body(Map.of("error", "No valid profile fields were supplied."));
+
+        userRepository.save(user);
+        sseService.broadcast("profile.updated", user);
+        return ResponseEntity.ok(Map.of("data", user));
+    }
+
+    @PostMapping("/upload-avatar")
+    public ResponseEntity<?> uploadAvatar(@RequestParam("avatar") MultipartFile file) throws IOException {
+        String contentType = file.getContentType();
+        if (file.isEmpty() || file.getSize() > 2 * 1024 * 1024 || contentType == null || !contentType.matches("^image/(png|jpe?g|webp)$")) {
+            return ResponseEntity.status(400).body(Map.of("error", "Upload a PNG, JPG, or WEBP image no larger than 2 MB."));
         }
 
-        User user = userOpt.get();
-        if (user.getPassword() == null || !passwordEncoder.matches(password, user.getPassword())) {
-            return ResponseEntity.status(401).body(Map.of("error", "Invalid email/TNT No or password."));
-        }
-        if (Boolean.FALSE.equals(user.getIsVerified())) {
-            return ResponseEntity.status(403).body(Map.of("error", "Verify your email before signing in."));
-        }
+        String originalName = file.getOriginalFilename();
+        if (originalName == null) originalName = "avatar.jpg";
 
-        String token = jwtUtil.generateToken(user.getId(), user.getEmail());
+        String filename = "user_" + System.currentTimeMillis() + "_" + originalName.toLowerCase();
+        File dest = new File("uploads/" + filename);
+        dest.getParentFile().mkdirs();
+        file.transferTo(dest);
 
-        Map<String, Object> response = new HashMap<>();
-        response.put("token", token);
-        response.put("user", Map.of(
-            "id", user.getId(),
-            "name", user.getName() != null ? user.getName() : "",
-            "email", user.getEmail(),
-            "tntNo", user.getTntNo() != null ? user.getTntNo() : "",
-            "semester", user.getSemester() != null ? user.getSemester() : "",
-            "section", user.getSection() != null ? user.getSection() : "",
-            "role", user.getRole() != null ? user.getRole() : "student"
-        ));
+        User user = getCurrentUser();
+        String avatarUrl = backendUrl + "/uploads/" + filename;
+        user.setAvatarUrl(avatarUrl);
+        userRepository.save(user);
 
-        return ResponseEntity.ok(response);
+        return ResponseEntity.ok(Map.of("data", Map.of("avatarUrl", avatarUrl)));
     }
 }

@@ -1,96 +1,53 @@
 package com.classsync.backend.service;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.mail.SimpleMailMessage;
+import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Service;
-
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
+import org.springframework.web.reactive.function.client.WebClient;
+import java.util.Map;
 
 @Service
+@SuppressWarnings("null")
 public class EmailService {
+    @Autowired private JavaMailSender mailSender;
+    
+    @Value("${app.brevo.api-key:}") private String brevoApiKey;
+    @Value("${app.brevo.sender.email:}") private String brevoSenderEmail;
+    @Value("${app.brevo.sender.name:}") private String brevoSenderName;
+    
+    @Value("${app.resend.api-key:}") private String resendApiKey;
+    @Value("${app.resend.from:}") private String resendFrom;
+    
+    @Value("${spring.mail.username:}") private String smtpFrom;
 
-    @Value("${brevo.api.key:}")
-    private String brevoApiKey;
+    private final WebClient webClient = WebClient.create();
 
-    @Value("${brevo.sender.email:phyopyaekhaing2006@gmail.com}")
-    private String senderEmail;
-
-    @Value("${brevo.sender.name:ClassSync Portal}")
-    private String senderName;
-
-    @Value("${resend.api.key:}")
-    private String resendApiKey;
-
-    @Value("${resend.from:ClassSync <onboarding@resend.dev>}")
-    private String resendFrom;
-
-    public void sendOtpEmail(String recipientEmail, String otp) throws Exception {
+    public void sendOtp(String to, String otp) {
         if (brevoApiKey != null && !brevoApiKey.isEmpty()) {
-            sendViaBrevo(recipientEmail, otp);
+            webClient.post().uri("https://api.brevo.com/v3/smtp/email")
+                .header("api-key", brevoApiKey).header("Content-Type", "application/json")
+                .bodyValue(Map.<String, Object>of("sender", Map.of("name", brevoSenderName, "email", brevoSenderEmail),
+                                  "to", new Object[]{Map.of("email", to)},
+                                  "subject", "Your ClassSync verification code",
+                                  "textContent", "Your ClassSync verification code is " + otp + ".",
+                                  "htmlContent", "<p>Your ClassSync verification code is:</p><h1>" + otp + "</h1><p>Enter this code to complete registration.</p>"))
+                .retrieve().bodyToMono(String.class).block();
         } else if (resendApiKey != null && !resendApiKey.isEmpty()) {
-            sendViaResend(recipientEmail, otp);
+            webClient.post().uri("https://api.resend.com/emails")
+                .header("Authorization", "Bearer " + resendApiKey).header("Content-Type", "application/json")
+                .bodyValue(Map.<String, Object>of("from", resendFrom, "to", new String[]{to},
+                                  "subject", "Your ClassSync verification code",
+                                  "html", "<p>Your ClassSync verification code is:</p><h1>" + otp + "</h1><p>Enter this code to complete registration.</p>"))
+                .retrieve().bodyToMono(String.class).block();
         } else {
-            System.out.println("==========================================");
-            System.out.println("NO EMAIL API KEY SET. OTP FOR " + recipientEmail + ": " + otp);
-            System.out.println("==========================================");
-        }
-    }
-
-    private void sendViaBrevo(String recipientEmail, String otp) throws Exception {
-        String jsonBody = "{"
-                + "\"sender\": {\"name\": \"" + senderName + "\", \"email\": \"" + senderEmail + "\"},"
-                + "\"to\": [{\"email\": \"" + recipientEmail + "\"}],"
-                + "\"subject\": \"Your ClassSync verification code\","
-                + "\"textContent\": \"Your ClassSync verification code is " + otp + ". Enter this code to complete registration.\","
-                + "\"htmlContent\": \"<p>Your ClassSync verification code is:</p><h1>" + otp + "</h1><p>Enter this code to complete registration.</p>\""
-                + "}";
-
-        HttpClient client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
-
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create("https://api.brevo.com/v3/smtp/email"))
-                .header("api-key", brevoApiKey)
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                .build();
-
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-
-        if (response.statusCode() != 201 && response.statusCode() != 200) {
-            throw new RuntimeException("Brevo API returned status " + response.statusCode() + ": " + response.body());
-        }
-    }
-
-    private void sendViaResend(String recipientEmail, String otp) throws Exception {
-        String jsonBody = "{"
-                + "\"from\": \"" + resendFrom + "\","
-                + "\"to\": [\"" + recipientEmail + "\"],"
-                + "\"subject\": \"Your ClassSync verification code\","
-                + "\"html\": \"<p>Your ClassSync verification code is:</p><h1>" + otp + "</h1><p>Enter this code to complete registration.</p>\""
-                + "}";
-
-        HttpClient client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
-
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create("https://api.resend.com/emails"))
-                .header("Authorization", "Bearer " + resendApiKey)
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                .build();
-
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-
-        if (response.statusCode() != 200 && response.statusCode() != 201) {
-            throw new RuntimeException("Resend API returned status " + response.statusCode() + ": " + response.body());
+            SimpleMailMessage message = new SimpleMailMessage();
+            message.setFrom(smtpFrom);
+            message.setTo(to);
+            message.setSubject("Your ClassSync verification code");
+            message.setText("Your ClassSync verification code is " + otp + ". It expires when you request another code.");
+            mailSender.send(message);
         }
     }
 }
